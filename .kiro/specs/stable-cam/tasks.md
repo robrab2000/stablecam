@@ -63,7 +63,7 @@
   - Write tests for monitoring loop and event triggering
   - _Requirements: 3.5, 3.2, 3.3, 3.4_
 
-- [ ] 10. Create CLI command interface
+- [x] 10. Create CLI command interface
   - Implement CLI entry point using `click` or `argparse`
   - Add `register` command to register first detected camera
   - Add `list` command to display all registered devices

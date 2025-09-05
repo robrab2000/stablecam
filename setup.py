@@ -29,7 +29,8 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        # Core dependencies will be added in later tasks
+        "click>=8.0.0",
+        # Additional core dependencies will be added in later tasks
     ],
     extras_require={
         "dev": [
