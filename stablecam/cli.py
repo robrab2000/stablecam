@@ -89,6 +89,32 @@ def register(registry_path: Optional[str]):
     type=click.Path(),
     help='Custom path for the device registry file'
 )
+def monitor(registry_path: Optional[str]):
+    """
+    Launch the terminal UI for real-time camera monitoring.
+    
+    Opens an interactive terminal interface that displays all registered
+    cameras with their stable IDs, connection status, and real-time updates
+    when devices connect or disconnect.
+    """
+    try:
+        from .tui import run_tui
+        run_tui(registry_path=registry_path)
+    except ImportError as e:
+        click.echo(f"TUI dependencies not available: {e}", err=True)
+        click.echo("Install with: pip install 'stablecam[tui]'", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"TUI error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    '--registry-path', 
+    type=click.Path(),
+    help='Custom path for the device registry file'
+)
 @click.option(
     '--format', 
     'output_format',

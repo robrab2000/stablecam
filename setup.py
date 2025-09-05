@@ -33,6 +33,9 @@ setup(
         # Additional core dependencies will be added in later tasks
     ],
     extras_require={
+        "tui": [
+            "textual>=0.41.0",
+        ],
         "dev": [
             "pytest>=6.0",
             "pytest-cov>=2.0",

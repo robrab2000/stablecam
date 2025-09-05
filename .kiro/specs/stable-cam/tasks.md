@@ -1,4 +1,4 @@
-# Implementation Plan
+ have a commit message for this pleas Implementation Plan
 
 - [x] 1. Set up project structure and core data models
   - Create package directory structure with `stablecam/` module
@@ -70,7 +70,7 @@
   - Write tests for CLI command parsing and execution
   - _Requirements: 4.5, 2.2, 2.4_
 
-- [ ] 11. Implement terminal UI using Textual framework
+- [x] 11. Implement terminal UI using Textual framework
   - Create main TUI application class with device list display
   - Implement real-time updates showing stable IDs and system indexes
   - Add visual indicators for connection/disconnection events
