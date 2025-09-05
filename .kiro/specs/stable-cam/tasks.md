@@ -42,7 +42,7 @@
   - Write unit tests with mocked AVFoundation responses
   - _Requirements: 5.3, 1.1, 1.4_
 
-- [ ] 7. Create event management system
+- [x] 7. Create event management system
   - Implement `EventManager` class with subscribe/unsubscribe methods
   - Add event types: `on_connect`, `on_disconnect`, `on_status_change`
   - Implement thread-safe event emission and callback execution

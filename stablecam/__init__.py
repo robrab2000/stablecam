@@ -9,6 +9,7 @@ from .models import CameraDevice, RegisteredDevice, DeviceStatus
 from .manager import StableCam
 from .registry import DeviceRegistry, RegistryError, RegistryCorruptionError
 from .backends import DeviceDetector, PlatformBackend
+from .events import EventManager, EventType
 
 __version__ = "0.1.0"
 __all__ = [
@@ -20,5 +21,7 @@ __all__ = [
     "RegistryError",
     "RegistryCorruptionError",
     "DeviceDetector",
-    "PlatformBackend"
+    "PlatformBackend",
+    "EventManager",
+    "EventType"
 ]
