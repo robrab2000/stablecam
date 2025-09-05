@@ -8,6 +8,7 @@ logic using mock backends for cross-platform compatibility.
 import platform
 import pytest
 import os
+import json
 from unittest.mock import Mock, patch, MagicMock, mock_open
 
 from stablecam.models import CameraDevice, DeviceStatus
@@ -1320,3 +1321,591 @@ COMPUTER,{6BDD1FC6-810F-11D0-BEC7-08002BE2092F},USB\\VID_046D&PID_085B\\ABC123,L
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestMacOSBackend:
+    """Test the macOS camera detection backend."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        from stablecam.backends.macos import MacOSBackend
+        self.backend = MacOSBackend()
+    
+    def test_platform_name(self):
+        """Test that platform name is correctly set."""
+        assert self.backend.platform_name == "darwin"
+    
+    @patch('subprocess.run')
+    def test_check_system_profiler_availability_success(self, mock_run):
+        """Test system_profiler availability check when available."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_run.return_value = mock_result
+        
+        result = self.backend._check_system_profiler_availability()
+        assert result is True
+        
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == 'system_profiler'
+    
+    @patch('subprocess.run')
+    def test_check_system_profiler_availability_failure(self, mock_run):
+        """Test system_profiler availability check when not available."""
+        mock_run.side_effect = Exception("Command not found")
+        
+        result = self.backend._check_system_profiler_availability()
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_check_ioreg_availability_success(self, mock_run):
+        """Test ioreg availability check when available."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_run.return_value = mock_result
+        
+        result = self.backend._check_ioreg_availability()
+        assert result is True
+        
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == 'ioreg'
+    
+    @patch('subprocess.run')
+    def test_check_ioreg_availability_failure(self, mock_run):
+        """Test ioreg availability check when not available."""
+        mock_run.side_effect = Exception("Command not found")
+        
+        result = self.backend._check_ioreg_availability()
+        assert result is False
+    
+    def test_enumerate_cameras_basic(self):
+        """Test basic camera enumeration."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_device_info = {
+                '_name': 'FaceTime HD Camera',
+                'vendor_id': '05ac',
+                'product_id': '8600',
+                'serial_number': None,
+                'location_id': 'builtin',
+                'device_path': 'AVFoundation:builtin',
+                'manufacturer': 'Apple Inc.',
+                'built_in': True
+            }
+            mock_get_devices.return_value = [mock_device_info]
+            
+            cameras = self.backend.enumerate_cameras()
+            
+            assert len(cameras) == 1
+            assert cameras[0].system_index == 0
+            assert cameras[0].vendor_id == '05ac'
+            assert cameras[0].label == 'FaceTime HD Camera'
+    
+    def test_enumerate_cameras_no_devices(self):
+        """Test enumeration when no camera devices are found."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_get_devices.return_value = []
+            
+            cameras = self.backend.enumerate_cameras()
+            assert cameras == []
+    
+    def test_enumerate_cameras_with_error(self):
+        """Test enumeration handles device processing errors gracefully."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_device_info = {
+                '_name': 'Test Camera',
+                'vendor_id': '046d',
+                'product_id': '085b'
+            }
+            mock_get_devices.return_value = [mock_device_info]
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_create.side_effect = Exception("Device error")
+                
+                cameras = self.backend.enumerate_cameras()
+                
+                # Should handle error gracefully and return empty list
+                assert cameras == []
+    
+    def test_get_device_info_success(self):
+        """Test getting device info for existing device."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_device_info = {
+                '_name': 'Test Camera',
+                'vendor_id': '046d',
+                'product_id': '085b',
+                'serial_number': 'ABC123',
+                'location_id': '0x14100000',
+                'device_path': 'USB:0x14100000'
+            }
+            mock_get_devices.return_value = [mock_device_info]
+            
+            device = self.backend.get_device_info(0)
+            
+            assert device.system_index == 0
+            assert device.vendor_id == '046d'
+            assert device.product_id == '085b'
+            assert device.serial_number == 'ABC123'
+    
+    def test_get_device_info_not_found(self):
+        """Test getting device info for non-existent device."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_get_devices.return_value = []
+            
+            with pytest.raises(DeviceNotFoundError) as exc_info:
+                self.backend.get_device_info(0)
+            
+            assert "Camera device at index 0 not found" in str(exc_info.value)
+    
+    def test_get_device_info_creation_fails(self):
+        """Test getting device info when device creation fails."""
+        with patch.object(self.backend, '_get_camera_devices') as mock_get_devices:
+            mock_device_info = {'_name': 'Test Camera'}
+            mock_get_devices.return_value = [mock_device_info]
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_create.return_value = None
+                
+                with pytest.raises(DeviceNotFoundError) as exc_info:
+                    self.backend.get_device_info(0)
+                
+                assert "Could not get info for device at index 0" in str(exc_info.value)
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_system_profiler_success(self, mock_run):
+        """Test device enumeration via system_profiler."""
+        # Mock system_profiler JSON output
+        mock_json_output = {
+            "SPUSBDataType": [
+                {
+                    "_name": "USB Hub",
+                    "_items": [
+                        {
+                            "_name": "FaceTime HD Camera",
+                            "vendor_id": "0x05ac",
+                            "product_id": "0x8600",
+                            "serial_num": "CCGB7K042WDDJRLX",
+                            "location_id": "0x14100000",
+                            "manufacturer": "Apple Inc."
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_json_output)
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_system_profiler()
+        
+        assert len(devices) == 1
+        assert devices[0]['_name'] == 'FaceTime HD Camera'
+        assert devices[0]['vendor_id'] == '05ac'
+        assert devices[0]['product_id'] == '8600'
+        assert devices[0]['serial_number'] == 'CCGB7K042WDDJRLX'
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_system_profiler_failure(self, mock_run):
+        """Test system_profiler failure handling."""
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Command failed"
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_system_profiler()
+        assert devices == []
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_system_profiler_invalid_json(self, mock_run):
+        """Test system_profiler with invalid JSON output."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = "invalid json"
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_system_profiler()
+        assert devices == []
+    
+    def test_is_camera_device_by_name(self):
+        """Test camera device detection by name."""
+        test_cases = [
+            ({'_name': 'FaceTime HD Camera'}, True),
+            ({'_name': 'Built-in iSight'}, True),
+            ({'_name': 'Logitech Webcam'}, True),
+            ({'_name': 'USB Video Device'}, True),
+            ({'_name': 'Microsoft LifeCam'}, True),
+            ({'_name': 'USB Hub'}, False),
+            ({'_name': 'Keyboard'}, False),
+            ({'_name': 'Mouse'}, False)
+        ]
+        
+        for device_info, expected in test_cases:
+            result = self.backend._is_camera_device(device_info)
+            assert result == expected, f"Failed for device: {device_info['_name']}"
+    
+    def test_is_camera_device_by_manufacturer(self):
+        """Test camera device detection by manufacturer."""
+        device_info = {
+            '_name': 'Unknown Device',
+            'manufacturer': 'Video Technology Inc.'
+        }
+        
+        result = self.backend._is_camera_device(device_info)
+        assert result is True
+    
+    def test_parse_system_profiler_device_success(self):
+        """Test parsing system_profiler device information."""
+        device_info = {
+            '_name': 'FaceTime HD Camera',
+            'vendor_id': '0x05ac',
+            'product_id': '0x8600',
+            'serial_num': 'CCGB7K042WDDJRLX',
+            'location_id': '0x14100000',
+            'manufacturer': 'Apple Inc.',
+            'bcd_device': '1.0',
+            'device_speed': 'Up to 480 Mb/sec'
+        }
+        
+        parsed = self.backend._parse_system_profiler_device(device_info, '')
+        
+        assert parsed is not None
+        assert parsed['_name'] == 'FaceTime HD Camera'
+        assert parsed['vendor_id'] == '05ac'
+        assert parsed['product_id'] == '8600'
+        assert parsed['serial_number'] == 'CCGB7K042WDDJRLX'
+        assert parsed['device_path'] == 'USB:0x14100000'
+        assert parsed['manufacturer'] == 'Apple Inc.'
+    
+    def test_parse_system_profiler_device_hex_conversion(self):
+        """Test hex ID conversion in system_profiler parsing."""
+        test_cases = [
+            ('0x046d', '046d'),
+            ('1133', '046d'),  # 1133 in decimal = 0x046d
+            ('0x05AC', '05ac'),
+            (1133, '046d'),  # 0x046d in decimal
+            ('invalid', 'inva')  # Should be truncated/padded to 4 chars
+        ]
+        
+        for input_id, expected in test_cases:
+            device_info = {
+                '_name': 'Test Camera',
+                'vendor_id': input_id,
+                'product_id': '0x085b'
+            }
+            
+            parsed = self.backend._parse_system_profiler_device(device_info, '')
+            
+            if expected == 'inva':
+                # Special case for invalid input - should be truncated to 4 chars
+                assert len(parsed['vendor_id']) == 4
+                assert parsed['vendor_id'] == 'inva'
+            else:
+                assert parsed['vendor_id'] == expected
+    
+    def test_parse_system_profiler_device_no_serial(self):
+        """Test parsing device with no serial number."""
+        device_info = {
+            '_name': 'Test Camera',
+            'vendor_id': '0x046d',
+            'product_id': '0x085b',
+            'serial_num': '0'  # Should be treated as None
+        }
+        
+        parsed = self.backend._parse_system_profiler_device(device_info, '')
+        
+        assert parsed['serial_number'] is None
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_ioreg_success(self, mock_run):
+        """Test device enumeration via ioreg."""
+        # Mock ioreg output
+        ioreg_output = '''
++-o USB2.0 Hub@14100000  <class IOUSBHostDevice, id 0x100000abc>
+  |   "idVendor" = 1452
+  |   "idProduct" = 34816
+  |   "USB Serial Number" = "CCGB7K042WDDJRLX"
+  |   "USB Vendor Name" = "Apple Inc."
+  |   "USB Product Name" = "FaceTime HD Camera"
+  |   "locationID" = 0x14100000
+  |   "bInterfaceClass" = 14
++-o Keyboard@14200000  <class IOUSBHostDevice, id 0x100000def>
+  |   "idVendor" = 1452
+  |   "idProduct" = 123
+        '''
+        
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = ioreg_output
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_ioreg()
+        
+        # Should find the camera device (has bInterfaceClass = 14)
+        assert len(devices) == 1
+        assert devices[0]['_name'] == 'USB2.0 Hub'
+        assert devices[0]['vendor_id'] == '05ac'  # 1452 in hex
+        assert devices[0]['product_id'] == '8800'  # 34816 in hex
+        assert devices[0]['serial_number'] == 'CCGB7K042WDDJRLX'
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_ioreg_failure(self, mock_run):
+        """Test ioreg failure handling."""
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Command failed"
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_ioreg()
+        assert devices == []
+    
+    def test_extract_device_name_from_ioreg_line(self):
+        """Test device name extraction from ioreg line."""
+        test_cases = [
+            ('+-o FaceTime HD Camera@14100000  <class IOUSBHostDevice>', 'FaceTime HD Camera'),
+            ('  +-o USB Hub@14200000  <class IOUSBHostDevice>', 'USB Hub'),
+            ('+-o Device Name With Spaces@address  <class>', 'Device Name With Spaces'),
+            ('invalid line', 'Unknown Device')
+        ]
+        
+        for line, expected in test_cases:
+            result = self.backend._extract_device_name_from_ioreg_line(line)
+            assert result == expected
+    
+    def test_is_ioreg_camera_device(self):
+        """Test ioreg camera device detection."""
+        test_cases = [
+            ({'_name': 'FaceTime HD Camera'}, True),
+            ({'_name': 'USB Hub', 'bInterfaceClass': '14'}, True),
+            ({'_name': 'USB Hub', 'bInterfaceClass': '0xe'}, True),
+            ({'_name': 'Keyboard'}, False),
+            ({'_name': 'USB Hub', 'bInterfaceClass': '3'}, False)
+        ]
+        
+        for device_info, expected in test_cases:
+            result = self.backend._is_ioreg_camera_device(device_info)
+            assert result == expected
+    
+    def test_parse_ioreg_device_success(self):
+        """Test parsing ioreg device information."""
+        device_info = {
+            '_name': 'FaceTime HD Camera',
+            'idVendor': '1452',
+            'idProduct': '34816',
+            'USB Serial Number': 'CCGB7K042WDDJRLX',
+            'locationID': '0x14100000',
+            'USB Vendor Name': 'Apple Inc.',
+            'USB Product Name': 'FaceTime HD Camera',
+            'Device Speed': 'Up to 480 Mb/sec'
+        }
+        
+        parsed = self.backend._parse_ioreg_device(device_info)
+        
+        assert parsed is not None
+        assert parsed['_name'] == 'FaceTime HD Camera'
+        assert parsed['vendor_id'] == '05ac'  # 1452 in hex
+        assert parsed['product_id'] == '8800'  # 34816 in hex
+        assert parsed['serial_number'] == 'CCGB7K042WDDJRLX'
+        assert parsed['device_path'] == 'IOKit:0x14100000'
+        assert parsed['manufacturer'] == 'Apple Inc.'
+    
+    def test_parse_ioreg_device_no_serial(self):
+        """Test parsing ioreg device with no serial number."""
+        device_info = {
+            '_name': 'Test Camera',
+            'idVendor': '1452',
+            'idProduct': '34816',
+            'USB Serial Number': '0'  # Should be treated as None
+        }
+        
+        parsed = self.backend._parse_ioreg_device(device_info)
+        
+        assert parsed['serial_number'] is None
+    
+    @patch('os.path.exists')
+    def test_get_devices_fallback_with_avfoundation(self, mock_exists):
+        """Test fallback device enumeration when AVFoundation is available."""
+        mock_exists.return_value = True
+        
+        devices = self.backend._get_devices_fallback()
+        
+        assert len(devices) == 1
+        assert devices[0]['_name'] == 'Built-in Camera'
+        assert devices[0]['vendor_id'] == '05ac'
+        assert devices[0]['built_in'] is True
+    
+    @patch('os.path.exists')
+    def test_get_devices_fallback_no_avfoundation(self, mock_exists):
+        """Test fallback device enumeration when AVFoundation is not available."""
+        mock_exists.return_value = False
+        
+        devices = self.backend._get_devices_fallback()
+        
+        # Should still return empty list gracefully
+        assert devices == []
+    
+    def test_create_camera_device_success(self):
+        """Test successful camera device creation."""
+        device_info = {
+            '_name': 'FaceTime HD Camera',
+            'vendor_id': '05ac',
+            'product_id': '8600',
+            'serial_number': 'CCGB7K042WDDJRLX',
+            'device_path': 'USB:0x14100000',
+            'location_id': '0x14100000',
+            'manufacturer': 'Apple Inc.',
+            'product_name': 'FaceTime HD Camera',
+            'device_speed': 'Up to 480 Mb/sec',
+            'built_in': True
+        }
+        
+        camera = self.backend._create_camera_device(0, device_info)
+        
+        assert camera is not None
+        assert camera.system_index == 0
+        assert camera.vendor_id == '05ac'
+        assert camera.product_id == '8600'
+        assert camera.serial_number == 'CCGB7K042WDDJRLX'
+        assert camera.port_path == 'USB:0x14100000'
+        assert camera.label == 'FaceTime HD Camera'
+        assert camera.platform_data['built_in'] is True
+        assert camera.platform_data['manufacturer'] == 'Apple Inc.'
+    
+    def test_create_camera_device_minimal_info(self):
+        """Test camera device creation with minimal information."""
+        device_info = {
+            '_name': 'Unknown Camera'
+        }
+        
+        camera = self.backend._create_camera_device(0, device_info)
+        
+        assert camera is not None
+        assert camera.system_index == 0
+        assert camera.vendor_id == '0000'
+        assert camera.product_id == '0000'
+        assert camera.serial_number is None
+        assert camera.label == 'Unknown Camera'
+    
+    def test_create_camera_device_failure(self):
+        """Test camera device creation failure handling."""
+        # Pass invalid device info that will cause an exception
+        device_info = None
+        
+        camera = self.backend._create_camera_device(0, device_info)
+        
+        assert camera is None
+    
+    def test_get_camera_devices_system_profiler_priority(self):
+        """Test that system_profiler is used when available."""
+        self.backend._system_profiler_available = True
+        self.backend._ioreg_available = True
+        
+        with patch.object(self.backend, '_get_devices_via_system_profiler') as mock_sp, \
+             patch.object(self.backend, '_get_devices_via_ioreg') as mock_ioreg:
+            
+            mock_sp.return_value = [{'_name': 'Test Camera'}]
+            
+            devices = self.backend._get_camera_devices()
+            
+            mock_sp.assert_called_once()
+            mock_ioreg.assert_not_called()
+            assert len(devices) == 1
+    
+    def test_get_camera_devices_ioreg_fallback(self):
+        """Test that ioreg is used when system_profiler fails."""
+        self.backend._system_profiler_available = True
+        self.backend._ioreg_available = True
+        
+        with patch.object(self.backend, '_get_devices_via_system_profiler') as mock_sp, \
+             patch.object(self.backend, '_get_devices_via_ioreg') as mock_ioreg:
+            
+            mock_sp.side_effect = Exception("system_profiler failed")
+            mock_ioreg.return_value = [{'_name': 'Test Camera'}]
+            
+            devices = self.backend._get_camera_devices()
+            
+            mock_sp.assert_called_once()
+            mock_ioreg.assert_called_once()
+            assert len(devices) == 1
+    
+    def test_get_camera_devices_final_fallback(self):
+        """Test that fallback method is used when both tools fail."""
+        self.backend._system_profiler_available = False
+        self.backend._ioreg_available = False
+        
+        with patch.object(self.backend, '_get_devices_fallback') as mock_fallback:
+            mock_fallback.return_value = [{'_name': 'Fallback Camera'}]
+            
+            devices = self.backend._get_camera_devices()
+            
+            mock_fallback.assert_called_once()
+            assert len(devices) == 1
+    
+    def test_extract_cameras_from_usb_tree_recursive(self):
+        """Test recursive camera extraction from USB device tree."""
+        usb_tree = [
+            {
+                '_name': 'USB Hub',
+                'location_id': '0x14000000',
+                '_items': [
+                    {
+                        '_name': 'FaceTime HD Camera',
+                        'vendor_id': '0x05ac',
+                        'product_id': '0x8600'
+                    },
+                    {
+                        '_name': 'Keyboard',
+                        'vendor_id': '0x05ac',
+                        'product_id': '0x0123'
+                    }
+                ]
+            }
+        ]
+        
+        cameras = []
+        
+        with patch.object(self.backend, '_is_camera_device') as mock_is_camera, \
+             patch.object(self.backend, '_parse_system_profiler_device') as mock_parse:
+            
+            # Only the camera device should be detected
+            def is_camera_side_effect(device):
+                return 'Camera' in device.get('_name', '')
+            
+            mock_is_camera.side_effect = is_camera_side_effect
+            mock_parse.return_value = {'_name': 'FaceTime HD Camera'}
+            
+            self.backend._extract_cameras_from_usb_tree(usb_tree, cameras)
+            
+            assert len(cameras) == 1
+            assert cameras[0]['_name'] == 'FaceTime HD Camera'
+            
+            # Should have called is_camera_device for both devices
+            assert mock_is_camera.call_count == 3  # Hub + Camera + Keyboard
+    
+    def test_lazy_property_evaluation(self):
+        """Test that availability properties are evaluated lazily."""
+        # Initially None
+        assert self.backend._system_profiler_available is None
+        assert self.backend._ioreg_available is None
+        
+        with patch.object(self.backend, '_check_system_profiler_availability') as mock_sp, \
+             patch.object(self.backend, '_check_ioreg_availability') as mock_ioreg:
+            
+            mock_sp.return_value = True
+            mock_ioreg.return_value = False
+            
+            # First access should call the check method
+            result1 = self.backend.system_profiler_available
+            assert result1 is True
+            mock_sp.assert_called_once()
+            
+            # Second access should use cached value
+            result2 = self.backend.system_profiler_available
+            assert result2 is True
+            mock_sp.assert_called_once()  # Still only called once
+            
+            # Same for ioreg
+            result3 = self.backend.ioreg_available
+            assert result3 is False
+            mock_ioreg.assert_called_once()

@@ -35,7 +35,7 @@
   - Write unit tests with mocked WMF responses
   - _Requirements: 5.2, 1.1, 1.4_
 
-- [ ] 6. Implement macOS camera detection backend
+- [x] 6. Implement macOS camera detection backend
   - Create `MacOSBackend` class using AVFoundation and IOKit
   - Implement camera enumeration and hardware info extraction
   - Handle macOS-specific device identifiers and paths
