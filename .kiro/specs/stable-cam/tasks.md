@@ -21,7 +21,7 @@
   - Write unit tests with mock backends for cross-platform testing
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-- [ ] 4. Implement Linux camera detection backend
+- [x] 4. Implement Linux camera detection backend
   - Create `LinuxBackend` class using v4l2 and udev libraries
   - Implement camera enumeration via `/dev/video*` devices
   - Extract vendor ID, product ID, serial number, and port path
