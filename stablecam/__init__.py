@@ -8,6 +8,7 @@ that persist across disconnections and port changes.
 from .models import CameraDevice, RegisteredDevice, DeviceStatus
 from .manager import StableCam
 from .registry import DeviceRegistry, RegistryError, RegistryCorruptionError
+from .backends import DeviceDetector, PlatformBackend
 
 __version__ = "0.1.0"
 __all__ = [
@@ -17,5 +18,7 @@ __all__ = [
     "StableCam",
     "DeviceRegistry",
     "RegistryError",
-    "RegistryCorruptionError"
+    "RegistryCorruptionError",
+    "DeviceDetector",
+    "PlatformBackend"
 ]
