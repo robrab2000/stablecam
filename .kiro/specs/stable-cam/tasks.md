@@ -7,7 +7,7 @@
   - Write unit tests for data models and identifier generation
   - _Requirements: 1.1, 1.2, 7.1, 7.2, 7.3_
 
-- [ ] 2. Implement device registry with persistent storage
+- [x] 2. Implement device registry with persistent storage
   - Create `DeviceRegistry` class with JSON-based persistence
   - Implement device registration, lookup, and status update methods
   - Add file locking and atomic write operations for registry safety
