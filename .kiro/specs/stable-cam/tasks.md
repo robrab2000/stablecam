@@ -49,7 +49,7 @@
   - Write unit tests for event subscription and emission
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 8. Implement core StableCam manager class
+- [x] 8. Implement core StableCam manager class
   - Create `StableCam` class integrating detector, registry, and events
   - Implement `detect()`, `register()`, `list()`, and `get_by_id()` methods
   - Add device monitoring loop with continuous detection
