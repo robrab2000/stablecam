@@ -99,7 +99,7 @@
   - Test TUI functionality with Textual testing framework
   - _Requirements: 1.3, 2.5, 3.5, 4.1_
 
-- [ ] 15. Add documentation and examples
+- [x] 15. Add documentation and examples
   - Write API documentation with usage examples
   - Create README with installation and usage instructions
   - Add example scripts demonstrating library integration
