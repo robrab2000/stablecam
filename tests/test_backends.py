@@ -748,5 +748,575 @@ class TestLinuxBackendWithMockedLibraries:
             assert name is None
 
 
+class TestWindowsBackend:
+    """Test the Windows camera detection backend."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        from stablecam.backends.windows import WindowsBackend
+        self.backend = WindowsBackend()
+    
+    def test_platform_name(self):
+        """Test that platform name is correctly set."""
+        assert self.backend.platform_name == "windows"
+    
+    @patch('subprocess.run')
+    def test_check_wmi_availability_success(self, mock_run):
+        """Test WMI availability check when WMI is available."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_run.return_value = mock_result
+        
+        result = self.backend._check_wmi_availability()
+        assert result is True
+        
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == 'wmic'
+    
+    @patch('subprocess.run')
+    def test_check_wmi_availability_failure(self, mock_run):
+        """Test WMI availability check when WMI is not available."""
+        mock_run.side_effect = Exception("Command not found")
+        
+        result = self.backend._check_wmi_availability()
+        assert result is False
+    
+    @patch('subprocess.run')
+    def test_check_powershell_availability_success(self, mock_run):
+        """Test PowerShell availability check when PowerShell is available."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_run.return_value = mock_result
+        
+        result = self.backend._check_powershell_availability()
+        assert result is True
+        
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == 'powershell'
+    
+    @patch('subprocess.run')
+    def test_check_powershell_availability_failure(self, mock_run):
+        """Test PowerShell availability check when PowerShell is not available."""
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_run.return_value = mock_result
+        
+        result = self.backend._check_powershell_availability()
+        assert result is False
+    
+    def test_enumerate_cameras_basic(self):
+        """Test basic camera enumeration."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_devices = [
+                {
+                    'Name': 'USB Camera',
+                    'DeviceID': 'USB\\VID_046D&PID_085B\\ABC123',
+                    'VendorID': '046d',
+                    'ProductID': '085b',
+                    'SerialNumber': 'ABC123',
+                    'Status': 'OK'
+                }
+            ]
+            mock_get_devices.return_value = mock_devices
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_camera = CameraDevice(
+                    system_index=0,
+                    vendor_id='046d',
+                    product_id='085b',
+                    serial_number='ABC123',
+                    port_path='USB\\VID_046D&PID_085B\\ABC123',
+                    label='USB Camera',
+                    platform_data={}
+                )
+                mock_create.return_value = mock_camera
+                
+                cameras = self.backend.enumerate_cameras()
+                
+                assert len(cameras) == 1
+                assert cameras[0].vendor_id == '046d'
+                assert cameras[0].product_id == '085b'
+                assert cameras[0].serial_number == 'ABC123'
+    
+    def test_enumerate_cameras_no_devices(self):
+        """Test enumeration when no camera devices are found."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_get_devices.return_value = []
+            
+            cameras = self.backend.enumerate_cameras()
+            assert cameras == []
+    
+    def test_enumerate_cameras_with_error(self):
+        """Test enumeration handles device processing errors gracefully."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_devices = [
+                {'Name': 'Camera 1', 'DeviceID': 'USB\\VID_046D&PID_085B\\ABC123'},
+                {'Name': 'Camera 2', 'DeviceID': 'USB\\VID_046D&PID_085C\\DEF456'}
+            ]
+            mock_get_devices.return_value = mock_devices
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_camera = CameraDevice(
+                    system_index=0,
+                    vendor_id='046d',
+                    product_id='085b',
+                    serial_number='ABC123',
+                    port_path='USB\\VID_046D&PID_085B\\ABC123',
+                    label='Camera 1',
+                    platform_data={}
+                )
+                # First device succeeds, second fails
+                mock_create.side_effect = [mock_camera, Exception("Device error")]
+                
+                cameras = self.backend.enumerate_cameras()
+                
+                # Should return the successful device and continue
+                assert len(cameras) == 1
+                assert cameras[0].system_index == 0
+    
+    def test_get_device_info_success(self):
+        """Test getting device info for existing device."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_devices = [
+                {
+                    'Name': 'USB Camera',
+                    'DeviceID': 'USB\\VID_046D&PID_085B\\ABC123',
+                    'VendorID': '046d',
+                    'ProductID': '085b',
+                    'SerialNumber': 'ABC123'
+                }
+            ]
+            mock_get_devices.return_value = mock_devices
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_camera = CameraDevice(
+                    system_index=0,
+                    vendor_id='046d',
+                    product_id='085b',
+                    serial_number='ABC123',
+                    port_path='USB\\VID_046D&PID_085B\\ABC123',
+                    label='USB Camera',
+                    platform_data={}
+                )
+                mock_create.return_value = mock_camera
+                
+                device = self.backend.get_device_info(0)
+                
+                assert device.system_index == 0
+                assert device.vendor_id == '046d'
+                assert device.product_id == '085b'
+    
+    def test_get_device_info_not_found(self):
+        """Test getting device info for non-existent device."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_get_devices.return_value = []
+            
+            with pytest.raises(DeviceNotFoundError) as exc_info:
+                self.backend.get_device_info(0)
+            
+            assert "Camera device at index 0 not found" in str(exc_info.value)
+    
+    def test_get_device_info_creation_fails(self):
+        """Test getting device info when device creation fails."""
+        with patch.object(self.backend, '_get_wmi_camera_devices') as mock_get_devices:
+            mock_devices = [{'Name': 'USB Camera', 'DeviceID': 'USB\\VID_046D&PID_085B\\ABC123'}]
+            mock_get_devices.return_value = mock_devices
+            
+            with patch.object(self.backend, '_create_camera_device') as mock_create:
+                mock_create.return_value = None
+                
+                with pytest.raises(DeviceNotFoundError) as exc_info:
+                    self.backend.get_device_info(0)
+                
+                assert "Could not get info for device at index 0" in str(exc_info.value)
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_powershell_success(self, mock_run):
+        """Test device enumeration via PowerShell."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = '''[
+            {
+                "Name": "USB Camera",
+                "DeviceID": "USB\\\\VID_046D&PID_085B\\\\ABC123",
+                "VendorID": "046D",
+                "ProductID": "085B",
+                "SerialNumber": "ABC123",
+                "Status": "OK"
+            }
+        ]'''
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_powershell()
+        
+        assert len(devices) == 1
+        assert devices[0]['Name'] == 'USB Camera'
+        assert devices[0]['VendorID'] == '046d'
+        assert devices[0]['ProductID'] == '085b'
+        assert devices[0]['SerialNumber'] == 'ABC123'
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_powershell_single_device(self, mock_run):
+        """Test PowerShell enumeration with single device (object instead of array)."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = '''{
+            "Name": "USB Camera",
+            "DeviceID": "USB\\\\VID_046D&PID_085B\\\\ABC123",
+            "VendorID": "046D",
+            "ProductID": "085B"
+        }'''
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_powershell()
+        
+        assert len(devices) == 1
+        assert devices[0]['Name'] == 'USB Camera'
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_powershell_failure(self, mock_run):
+        """Test PowerShell enumeration failure."""
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = 'PowerShell error'
+        mock_result.stdout = ''
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_powershell()
+        assert devices == []
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_powershell_json_error(self, mock_run):
+        """Test PowerShell enumeration with invalid JSON."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = 'invalid json'
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_powershell()
+        assert devices == []
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_wmic_success(self, mock_run):
+        """Test device enumeration via WMIC."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = '''Node,ClassGuid,DeviceID,Name,PNPDeviceID,Service,Status
+COMPUTER,{6BDD1FC6-810F-11D0-BEC7-08002BE2092F},USB\\VID_046D&PID_085B\\ABC123,USB Camera,USB\\VID_046D&PID_085B\\ABC123,usbvideo,OK
+'''
+        mock_run.return_value = mock_result
+        
+        with patch.object(self.backend, '_is_camera_device_name') as mock_is_camera:
+            mock_is_camera.return_value = True
+            
+            devices = self.backend._get_devices_via_wmic()
+            
+            assert len(devices) == 1
+            assert devices[0]['Name'] == 'USB Camera'
+            assert devices[0]['VendorID'] == '046d'
+            assert devices[0]['ProductID'] == '085b'
+    
+    @patch('subprocess.run')
+    def test_get_devices_via_wmic_failure(self, mock_run):
+        """Test WMIC enumeration failure."""
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stderr = 'WMIC error'
+        mock_run.return_value = mock_result
+        
+        devices = self.backend._get_devices_via_wmic()
+        assert devices == []
+    
+    def test_get_devices_fallback(self):
+        """Test fallback device enumeration."""
+        devices = self.backend._get_devices_fallback()
+        
+        # Should return at least one basic device for testing
+        assert len(devices) >= 1
+        assert 'Name' in devices[0]
+        assert 'DeviceID' in devices[0]
+        assert 'VendorID' in devices[0]
+        assert 'ProductID' in devices[0]
+    
+    def test_is_camera_device_name_positive_cases(self):
+        """Test camera device name detection for positive cases."""
+        camera_names = [
+            'USB Camera',
+            'Logitech Webcam',
+            'Microsoft LifeCam',
+            'Integrated Camera',
+            'USB Video Device',
+            'HD Pro Webcam C920'
+        ]
+        
+        for name in camera_names:
+            assert self.backend._is_camera_device_name(name) is True
+    
+    def test_is_camera_device_name_negative_cases(self):
+        """Test camera device name detection for negative cases."""
+        non_camera_names = [
+            'USB Mass Storage',
+            'Bluetooth Device',
+            'Network Adapter',
+            'Audio Device',
+            '',
+            None
+        ]
+        
+        for name in non_camera_names:
+            assert self.backend._is_camera_device_name(name) is False
+    
+    def test_parse_wmic_device_info_success(self):
+        """Test parsing WMIC CSV device information."""
+        csv_parts = [
+            'COMPUTER',
+            '{6BDD1FC6-810F-11D0-BEC7-08002BE2092F}',
+            'USB\\VID_046D&PID_085B\\ABC123',
+            'USB Camera',
+            'USB\\VID_046D&PID_085B\\ABC123',
+            'usbvideo',
+            'OK'
+        ]
+        
+        device_info = self.backend._parse_wmic_device_info(csv_parts)
+        
+        assert device_info is not None
+        assert device_info['Name'] == 'USB Camera'
+        assert device_info['VendorID'] == '046d'
+        assert device_info['ProductID'] == '085b'
+        assert device_info['SerialNumber'] == 'ABC123'
+        assert device_info['Status'] == 'OK'
+    
+    def test_parse_wmic_device_info_insufficient_parts(self):
+        """Test parsing WMIC CSV with insufficient parts."""
+        csv_parts = ['COMPUTER', 'ClassGuid']  # Too few parts
+        
+        device_info = self.backend._parse_wmic_device_info(csv_parts)
+        assert device_info is None
+    
+    def test_parse_usb_device_id_full_info(self):
+        """Test USB device ID parsing with full information."""
+        device_id = 'USB\\VID_046D&PID_085B\\ABC123456'
+        
+        vendor_id, product_id, serial_number = self.backend._parse_usb_device_id(device_id)
+        
+        assert vendor_id == '046d'
+        assert product_id == '085b'
+        assert serial_number == 'ABC123456'
+    
+    def test_parse_usb_device_id_no_serial(self):
+        """Test USB device ID parsing without serial number."""
+        device_id = 'USB\\VID_046D&PID_085B\\12345'  # Numeric instance ID
+        
+        vendor_id, product_id, serial_number = self.backend._parse_usb_device_id(device_id)
+        
+        assert vendor_id == '046d'
+        assert product_id == '085b'
+        assert serial_number is None  # Numeric instance IDs are not serial numbers
+    
+    def test_parse_usb_device_id_case_insensitive(self):
+        """Test USB device ID parsing is case insensitive."""
+        device_id = 'usb\\vid_046d&pid_085b\\abc123'
+        
+        vendor_id, product_id, serial_number = self.backend._parse_usb_device_id(device_id)
+        
+        assert vendor_id == '046d'
+        assert product_id == '085b'
+        assert serial_number == 'abc123'
+    
+    def test_parse_usb_device_id_malformed(self):
+        """Test USB device ID parsing with malformed input."""
+        device_id = 'NOT_A_USB_DEVICE_ID'
+        
+        vendor_id, product_id, serial_number = self.backend._parse_usb_device_id(device_id)
+        
+        assert vendor_id == 'unknown'
+        assert product_id == 'unknown'
+        assert serial_number is None
+    
+    def test_create_camera_device_success(self):
+        """Test successful camera device creation."""
+        device_info = {
+            'Name': 'USB Camera',
+            'DeviceID': 'USB\\VID_046D&PID_085B\\ABC123',
+            'VendorID': '046d',
+            'ProductID': '085b',
+            'SerialNumber': 'ABC123',
+            'Status': 'OK',
+            'PNPDeviceID': 'USB\\VID_046D&PID_085B\\ABC123',
+            'Service': 'usbvideo',
+            'ClassGuid': '{6BDD1FC6-810F-11D0-BEC7-08002BE2092F}'
+        }
+        
+        camera = self.backend._create_camera_device(0, device_info)
+        
+        assert camera is not None
+        assert camera.system_index == 0
+        assert camera.vendor_id == '046d'
+        assert camera.product_id == '085b'
+        assert camera.serial_number == 'ABC123'
+        assert camera.label == 'USB Camera'
+        assert camera.port_path == 'USB\\VID_046D&PID_085B\\ABC123'
+        
+        # Check platform data
+        assert camera.platform_data['device_id'] == 'USB\\VID_046D&PID_085B\\ABC123'
+        assert camera.platform_data['status'] == 'OK'
+        assert camera.platform_data['service'] == 'usbvideo'
+    
+    def test_create_camera_device_minimal_info(self):
+        """Test camera device creation with minimal information."""
+        device_info = {
+            'Name': 'Unknown Camera'
+        }
+        
+        camera = self.backend._create_camera_device(1, device_info)
+        
+        assert camera is not None
+        assert camera.system_index == 1
+        assert camera.vendor_id == 'unknown'
+        assert camera.product_id == 'unknown'
+        assert camera.serial_number is None
+        assert camera.label == 'Unknown Camera'
+    
+    def test_create_camera_device_exception(self):
+        """Test camera device creation handles exceptions."""
+        # Pass invalid device info that will cause an exception
+        device_info = None
+        
+        camera = self.backend._create_camera_device(0, device_info)
+        assert camera is None
+
+
+class TestWindowsBackendIntegration:
+    """Integration tests for Windows backend with mocked WMI responses."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        from stablecam.backends.windows import WindowsBackend
+        self.backend = WindowsBackend()
+    
+    @patch('subprocess.run')
+    def test_full_enumeration_workflow_powershell(self, mock_run):
+        """Test complete enumeration workflow using PowerShell."""
+        # Mock subprocess calls
+        def mock_subprocess_run(cmd, *args, **kwargs):
+            result = Mock()
+            if cmd[0] == 'powershell':
+                if len(cmd) == 2 and cmd[1] == '-Command' and cmd[1] == 'Get-Host':
+                    # PowerShell availability check
+                    result.returncode = 0
+                else:
+                    # PowerShell device enumeration
+                    result.returncode = 0
+                    result.stdout = '''[
+                        {
+                            "Name": "Logitech HD Pro Webcam C920",
+                            "DeviceID": "USB\\\\VID_046D&PID_085B\\\\ABC123456",
+                            "VendorID": "046D",
+                            "ProductID": "085B", 
+                            "SerialNumber": "ABC123456",
+                            "Status": "OK"
+                        },
+                        {
+                            "Name": "Microsoft LifeCam HD-3000",
+                            "DeviceID": "USB\\\\VID_045E&PID_0779\\\\DEF789012",
+                            "VendorID": "045E",
+                            "ProductID": "0779",
+                            "SerialNumber": "DEF789012",
+                            "Status": "OK"
+                        }
+                    ]'''
+            elif cmd[0] == 'wmic':
+                # WMI availability check
+                result.returncode = 0
+            else:
+                result.returncode = 0
+            
+            return result
+        
+        mock_run.side_effect = mock_subprocess_run
+        
+        # Create new backend instance with mocked availability
+        from stablecam.backends.windows import WindowsBackend
+        backend = WindowsBackend()
+        
+        cameras = backend.enumerate_cameras()
+        
+        assert len(cameras) == 2
+        
+        # Check first camera
+        camera1 = cameras[0]
+        assert camera1.system_index == 0
+        assert camera1.vendor_id == '046d'
+        assert camera1.product_id == '085b'
+        assert camera1.serial_number == 'ABC123456'
+        assert camera1.label == 'Logitech HD Pro Webcam C920'
+        
+        # Check second camera
+        camera2 = cameras[1]
+        assert camera2.system_index == 1
+        assert camera2.vendor_id == '045e'
+        assert camera2.product_id == '0779'
+        assert camera2.serial_number == 'DEF789012'
+        assert camera2.label == 'Microsoft LifeCam HD-3000'
+    
+    @patch('subprocess.run')
+    def test_full_enumeration_workflow_wmic(self, mock_run):
+        """Test complete enumeration workflow using WMIC."""
+        # Mock availability checks - PowerShell fails, WMIC succeeds
+        wmic_result = Mock()
+        wmic_result.returncode = 0
+        wmic_result.stdout = '''Node,ClassGuid,DeviceID,Name,PNPDeviceID,Service,Status
+COMPUTER,{6BDD1FC6-810F-11D0-BEC7-08002BE2092F},USB\\VID_046D&PID_085B\\ABC123,Logitech HD Pro Webcam C920,USB\\VID_046D&PID_085B\\ABC123,usbvideo,OK
+'''
+        
+        mock_run.side_effect = [
+            Mock(returncode=1),  # PowerShell availability check fails
+            Mock(returncode=0),  # WMI availability check succeeds
+            wmic_result  # WMIC device enumeration
+        ]
+        
+        # Create new backend instance with mocked availability
+        from stablecam.backends.windows import WindowsBackend
+        backend = WindowsBackend()
+        
+        cameras = backend.enumerate_cameras()
+        
+        assert len(cameras) == 1
+        
+        camera = cameras[0]
+        assert camera.system_index == 0
+        assert camera.vendor_id == '046d'
+        assert camera.product_id == '085b'
+        assert camera.serial_number == 'ABC123'
+        assert camera.label == 'Logitech HD Pro Webcam C920'
+    
+    @patch('subprocess.run')
+    def test_fallback_enumeration_workflow(self, mock_run):
+        """Test enumeration workflow when both PowerShell and WMIC fail."""
+        # Mock both availability checks to fail
+        mock_run.side_effect = [
+            Mock(returncode=1),  # PowerShell availability check fails
+            Mock(returncode=1),  # WMI availability check fails
+        ]
+        
+        # Create new backend instance with mocked availability
+        from stablecam.backends.windows import WindowsBackend
+        backend = WindowsBackend()
+        
+        cameras = backend.enumerate_cameras()
+        
+        # Should still return fallback devices
+        assert len(cameras) >= 1
+        
+        camera = cameras[0]
+        assert camera.system_index == 0
+        assert camera.vendor_id == '0000'  # Fallback values
+        assert camera.product_id == '0000'
+        assert 'USB Camera' in camera.label
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

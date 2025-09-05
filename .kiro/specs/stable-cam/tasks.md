@@ -28,7 +28,7 @@
   - Write unit tests with mocked v4l2/udev responses
   - _Requirements: 5.1, 1.1, 1.4_
 
-- [ ] 5. Implement Windows camera detection backend
+- [x] 5. Implement Windows camera detection backend
   - Create `WindowsBackend` class using Windows Media Foundation APIs
   - Implement camera enumeration and hardware info extraction
   - Handle Windows-specific device identifiers and paths
