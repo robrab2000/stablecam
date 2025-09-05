@@ -111,4 +111,4 @@ class DeviceDetector:
             from .macos import MacOSBackend
             return MacOSBackend()
         else:
-            raise UnsupportedPlatformError(f"Unsupported platform: {system}")
+            raise UnsupportedPlatformError(f"Unsupported platform: {system}", platform=system)

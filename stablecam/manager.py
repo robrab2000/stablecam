@@ -13,9 +13,11 @@ from typing import List, Optional, Callable
 from pathlib import Path
 
 from .models import CameraDevice, RegisteredDevice, DeviceStatus
-from .registry import DeviceRegistry, RegistryError
-from .backends import DeviceDetector, PlatformDetectionError
+from .registry import DeviceRegistry, RegistryError, RegistryCorruptionError
+from .backends import DeviceDetector
+from .backends.exceptions import PlatformDetectionError, StableCamError, HardwareError
 from .events import EventManager, EventType
+from .logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -29,23 +31,60 @@ class StableCam:
     stable IDs.
     """
     
-    def __init__(self, registry_path: Optional[Path] = None, poll_interval: float = 2.0):
+    def __init__(self, registry_path: Optional[Path] = None, poll_interval: float = 2.0, 
+                 log_level: str = "INFO", enable_logging: bool = True):
         """
         Initialize the StableCam manager.
         
         Args:
             registry_path: Optional custom path for registry file
             poll_interval: Interval in seconds for device monitoring loop
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+            enable_logging: Whether to set up logging configuration
         """
-        self.registry = DeviceRegistry(registry_path)
-        self.detector = DeviceDetector()
-        self.events = EventManager()
-        self.poll_interval = poll_interval
+        # Set up logging if requested
+        if enable_logging:
+            try:
+                setup_logging(log_level=log_level)
+            except Exception as e:
+                # Fallback to basic logging if setup fails
+                logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
+                logger.warning(f"Failed to set up advanced logging, using basic config: {e}")
+        
+        # Initialize components with error handling
+        try:
+            self.registry = DeviceRegistry(registry_path)
+            logger.debug("Registry initialized successfully")
+        except RegistryCorruptionError as e:
+            logger.error(f"Registry corruption detected during initialization: {e}")
+            # Registry should have handled recovery, but log the issue
+            self.registry = DeviceRegistry(registry_path)  # Try again after recovery
+        except Exception as e:
+            logger.error(f"Failed to initialize registry: {e}")
+            raise StableCamError(f"Registry initialization failed: {e}", cause=e)
+        
+        try:
+            self.detector = DeviceDetector()
+            logger.debug("Device detector initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize device detector: {e}")
+            raise StableCamError(f"Device detector initialization failed: {e}", cause=e)
+        
+        try:
+            self.events = EventManager()
+            logger.debug("Event manager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize event manager: {e}")
+            raise StableCamError(f"Event manager initialization failed: {e}", cause=e)
+        
+        self.poll_interval = max(0.1, poll_interval)  # Minimum 0.1 second interval
         
         # Monitoring state
         self._monitoring = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._error_count = 0
+        self._max_consecutive_errors = 10
         
         # Track last known device states for change detection
         self._last_known_devices: dict[str, DeviceStatus] = {}
@@ -53,7 +92,7 @@ class StableCam:
         # Cache current device info (including transient data like system_index)
         self._current_device_info: dict[str, CameraDevice] = {}
         
-        logger.info("StableCam manager initialized")
+        logger.info(f"StableCam manager initialized with poll interval {poll_interval}s")
     
     def detect(self) -> List[CameraDevice]:
         """
@@ -68,10 +107,25 @@ class StableCam:
         try:
             devices = self.detector.detect_cameras()
             logger.debug(f"Detected {len(devices)} camera devices")
+            self._error_count = 0  # Reset error count on success
             return devices
+        except PlatformDetectionError:
+            # Re-raise platform detection errors as-is
+            raise
+        except PermissionError as e:
+            logger.error(f"Permission denied during camera detection: {e}")
+            raise PlatformDetectionError(
+                f"Permission denied accessing camera devices: {e}",
+                platform=self.detector.get_platform_backend().platform_name,
+                cause=e
+            )
         except Exception as e:
-            logger.error(f"Camera detection failed: {e}")
-            raise PlatformDetectionError(f"Failed to detect cameras: {e}")
+            logger.error(f"Unexpected error during camera detection: {e}")
+            raise PlatformDetectionError(
+                f"Unexpected error during camera detection: {e}",
+                platform=self.detector.get_platform_backend().platform_name,
+                cause=e
+            )
     
     def register(self, device: CameraDevice) -> str:
         """
@@ -229,34 +283,78 @@ class StableCam:
         while self._monitoring and not self._stop_event.is_set():
             try:
                 self._check_device_changes()
+                self._error_count = 0  # Reset error count on success
+                
+            except PlatformDetectionError as e:
+                self._error_count += 1
+                logger.warning(f"Platform detection error in monitoring loop (#{self._error_count}): {e}")
+                
+                if self._error_count >= self._max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors ({self._error_count}), stopping monitoring")
+                    self._monitoring = False
+                    break
+                
+                # Exponential backoff for platform errors
+                error_delay = min(30.0, self.poll_interval * (2 ** min(self._error_count, 5)))
+                logger.debug(f"Waiting {error_delay}s before retry due to platform error")
+                if self._stop_event.wait(timeout=error_delay):
+                    break
+                continue
+                
+            except RegistryError as e:
+                self._error_count += 1
+                logger.error(f"Registry error in monitoring loop (#{self._error_count}): {e}")
+                
+                if self._error_count >= self._max_consecutive_errors:
+                    logger.error(f"Too many consecutive registry errors, stopping monitoring")
+                    self._monitoring = False
+                    break
+                
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
+                self._error_count += 1
+                logger.error(f"Unexpected error in monitoring loop (#{self._error_count}): {e}")
+                
+                if self._error_count >= self._max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors, stopping monitoring")
+                    self._monitoring = False
+                    break
             
             # Wait for next poll or stop signal
             if self._stop_event.wait(timeout=self.poll_interval):
                 break
         
-        logger.debug("Device monitoring loop stopped")
+        if self._error_count >= self._max_consecutive_errors:
+            logger.error("Monitoring stopped due to excessive errors")
+        else:
+            logger.debug("Device monitoring loop stopped normally")
     
     def _check_device_changes(self) -> None:
         """
         Check for device connection/disconnection changes and emit events.
+        
+        Raises:
+            PlatformDetectionError: If device detection fails
+            RegistryError: If registry operations fail
         """
-        try:
-            # Get currently detected devices
-            detected_devices = self.detect()
-            
-            # Get all registered devices
-            registered_devices = self.list()
-            
-            # Create mapping of hardware IDs to detected devices
-            detected_by_hw_id = {}
-            for device in detected_devices:
+        # Get currently detected devices
+        detected_devices = self.detect()
+        
+        # Get all registered devices
+        registered_devices = self.list()
+        
+        # Create mapping of hardware IDs to detected devices
+        detected_by_hw_id = {}
+        for device in detected_devices:
+            try:
                 hw_id = device.generate_hardware_id()
                 detected_by_hw_id[hw_id] = device
-            
-            # Check each registered device for status changes
-            for registered_device in registered_devices:
+            except Exception as e:
+                logger.warning(f"Failed to generate hardware ID for device {device.label}: {e}")
+                continue
+        
+        # Check each registered device for status changes
+        for registered_device in registered_devices:
+            try:
                 hw_id = registered_device.get_hardware_id()
                 stable_id = registered_device.stable_id
                 current_status = registered_device.status
@@ -272,35 +370,46 @@ class StableCam:
                     if registered_device.device_info.system_index != detected_device.system_index:
                         registered_device.device_info.system_index = detected_device.system_index
                         # Update the registry with the new device info
-                        self._update_device_info_in_registry(stable_id, detected_device)
+                        try:
+                            self._update_device_info_in_registry(stable_id, detected_device)
+                        except Exception as e:
+                            logger.warning(f"Failed to update device info in registry for {stable_id}: {e}")
                     
                     if current_status != DeviceStatus.CONNECTED:
                         # Device just connected
-                        self.registry.update_status(stable_id, DeviceStatus.CONNECTED)
-                        registered_device.status = DeviceStatus.CONNECTED
-                        
-                        logger.info(f"Device connected: {stable_id}")
-                        self.events.emit(EventType.ON_CONNECT.value, registered_device)
-                        self.events.emit(EventType.ON_STATUS_CHANGE.value, registered_device)
-                        
-                        # Update last known state
-                        self._last_known_devices[stable_id] = DeviceStatus.CONNECTED
+                        try:
+                            self.registry.update_status(stable_id, DeviceStatus.CONNECTED)
+                            registered_device.status = DeviceStatus.CONNECTED
+                            
+                            logger.info(f"Device connected: {stable_id}")
+                            self.events.emit(EventType.ON_CONNECT.value, registered_device)
+                            self.events.emit(EventType.ON_STATUS_CHANGE.value, registered_device)
+                            
+                            # Update last known state
+                            self._last_known_devices[stable_id] = DeviceStatus.CONNECTED
+                        except Exception as e:
+                            logger.error(f"Failed to update connection status for {stable_id}: {e}")
+                            
                 else:
                     # Device is not detected
                     if current_status == DeviceStatus.CONNECTED:
                         # Device just disconnected
-                        self.registry.update_status(stable_id, DeviceStatus.DISCONNECTED)
-                        registered_device.status = DeviceStatus.DISCONNECTED
-                        
-                        logger.info(f"Device disconnected: {stable_id}")
-                        self.events.emit(EventType.ON_DISCONNECT.value, registered_device)
-                        self.events.emit(EventType.ON_STATUS_CHANGE.value, registered_device)
-                        
-                        # Update last known state
-                        self._last_known_devices[stable_id] = DeviceStatus.DISCONNECTED
-                        
-        except Exception as e:
-            logger.error(f"Error checking device changes: {e}")
+                        try:
+                            self.registry.update_status(stable_id, DeviceStatus.DISCONNECTED)
+                            registered_device.status = DeviceStatus.DISCONNECTED
+                            
+                            logger.info(f"Device disconnected: {stable_id}")
+                            self.events.emit(EventType.ON_DISCONNECT.value, registered_device)
+                            self.events.emit(EventType.ON_STATUS_CHANGE.value, registered_device)
+                            
+                            # Update last known state
+                            self._last_known_devices[stable_id] = DeviceStatus.DISCONNECTED
+                        except Exception as e:
+                            logger.error(f"Failed to update disconnection status for {stable_id}: {e}")
+                            
+            except Exception as e:
+                logger.error(f"Error processing device {registered_device.stable_id}: {e}")
+                continue
     
     def _update_last_known_devices(self) -> None:
         """Update the last known devices state from current registry."""

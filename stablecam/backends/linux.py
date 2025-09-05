@@ -8,11 +8,14 @@ and extracts hardware information using udev libraries.
 import glob
 import os
 import re
+import logging
 from typing import List, Optional, Dict, Any
 
 from ..models import CameraDevice
 from .base import PlatformBackend
-from .exceptions import PlatformDetectionError, DeviceNotFoundError
+from .exceptions import PlatformDetectionError, DeviceNotFoundError, PermissionError, HardwareError
+
+logger = logging.getLogger(__name__)
 
 
 class LinuxBackend(PlatformBackend):
@@ -34,9 +37,9 @@ class LinuxBackend(PlatformBackend):
         try:
             import pyudev
             self._pyudev = pyudev
-        except ImportError:
-            # pyudev is optional - we'll use fallback methods
-            pass
+            logger.debug("pyudev library available")
+        except ImportError as e:
+            logger.debug(f"pyudev not available, using fallback methods: {e}")
             
         try:
             import v4l2
@@ -45,9 +48,11 @@ class LinuxBackend(PlatformBackend):
             self._v4l2 = v4l2
             self._fcntl = fcntl
             self._struct = struct
-        except ImportError:
-            # v4l2 is optional - we'll use basic enumeration
-            pass
+            logger.debug("v4l2 library available")
+        except ImportError as e:
+            logger.debug(f"v4l2 not available, using basic enumeration: {e}")
+        
+        logger.info("Linux backend initialized")
 
     @property
     def platform_name(self) -> str:
@@ -66,22 +71,46 @@ class LinuxBackend(PlatformBackend):
         """
         try:
             cameras = []
+            
+            # Check if we have permission to access video devices
+            if not os.path.exists('/dev'):
+                raise PlatformDetectionError("Cannot access /dev directory", platform="linux")
+            
             video_devices = self._find_video_devices()
+            logger.debug(f"Found {len(video_devices)} video devices")
             
             for device_path in video_devices:
                 try:
                     camera = self._create_camera_device(device_path)
                     if camera:
                         cameras.append(camera)
+                        logger.debug(f"Successfully processed device: {device_path}")
+                except PermissionError as e:
+                    logger.warning(f"Permission denied accessing device {device_path}: {e}")
+                    continue
+                except HardwareError as e:
+                    logger.warning(f"Hardware error with device {device_path}: {e}")
+                    continue
                 except Exception as e:
-                    # Log the error but continue with other devices
-                    print(f"Warning: Failed to process device {device_path}: {e}")
+                    logger.warning(f"Failed to process device {device_path}: {e}")
                     continue
             
+            logger.info(f"Successfully enumerated {len(cameras)} cameras on Linux")
             return cameras
             
+        except PermissionError as e:
+            raise PlatformDetectionError(
+                f"Permission denied accessing video devices: {e}",
+                platform="linux",
+                cause=e
+            )
         except Exception as e:
-            raise PlatformDetectionError(f"Failed to enumerate cameras on Linux: {e}")
+            logger.error(f"Camera enumeration failed on Linux: {e}")
+            raise PlatformDetectionError(
+                f"Failed to enumerate cameras on Linux: {e}",
+                platform="linux",
+                cause=e
+            )
 
     def get_device_info(self, system_index: int) -> CameraDevice:
         """
@@ -150,18 +179,31 @@ class LinuxBackend(PlatformBackend):
             bool: True if the device is a camera
         """
         try:
-            # Try to open the device to check if it's accessible
+            # Check if device exists and is accessible
+            if not os.path.exists(device_path):
+                logger.debug(f"Device does not exist: {device_path}")
+                return False
+                
             if not os.access(device_path, os.R_OK):
+                logger.debug(f"Device not readable: {device_path}")
                 return False
             
             # If we have v4l2 support, check device capabilities
             if self._v4l2 and self._fcntl and self._struct:
-                return self._check_v4l2_capabilities(device_path)
+                try:
+                    return self._check_v4l2_capabilities(device_path)
+                except PermissionError:
+                    logger.debug(f"Permission denied checking capabilities for {device_path}")
+                    return False
+                except Exception as e:
+                    logger.debug(f"Failed to check v4l2 capabilities for {device_path}: {e}")
+                    # Fall through to basic check
             
             # Fallback: assume all /dev/videoN devices are cameras
             return True
             
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error checking if {device_path} is camera device: {e}")
             return False
 
     def _check_v4l2_capabilities(self, device_path: str) -> bool:

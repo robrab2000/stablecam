@@ -235,7 +235,7 @@ class TestDeviceRegistry:
         
         # Simulate failure in atomic write for status updates
         with patch('tempfile.NamedTemporaryFile', side_effect=OSError("Simulated failure")):
-            with pytest.raises(OSError):
+            with pytest.raises(RegistryError):  # Our error handling converts OSError to RegistryError
                 registry._write_registry_atomic({"version": "1.0", "devices": {}})
         
         # Verify registry is still intact and readable
@@ -252,13 +252,13 @@ class TestDeviceRegistry:
         # Creating registry should handle corruption gracefully
         registry = DeviceRegistry(temp_registry_path)
         
-        # The first read operation should detect corruption and raise exception
-        with pytest.raises(RegistryCorruptionError):
-            registry.get_all()
+        # Registry should handle corruption gracefully and recover
+        devices = registry.get_all()
+        assert devices == []  # Should return empty list after recovery
         
         # After corruption handling, backup file should be created
-        backup_path = temp_registry_path.with_suffix('.json.backup')
-        assert backup_path.exists()
+        backup_files = list(temp_registry_path.parent.glob("*.backup_*.json"))
+        assert len(backup_files) > 0
         
         # New registry should be created and functional
         assert registry.get_all() == []
@@ -272,9 +272,9 @@ class TestDeviceRegistry:
         
         registry = DeviceRegistry(temp_registry_path)
         
-        # The first read operation should detect invalid structure
-        with pytest.raises(RegistryCorruptionError):
-            registry.get_all()
+        # Registry should handle invalid structure gracefully and recover
+        devices = registry.get_all()
+        assert devices == []  # Should return empty list after recovery
     
     def test_concurrent_access_safety(self, registry, sample_device):
         """Test that concurrent access to registry is safe."""
