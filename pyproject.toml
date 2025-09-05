@@ -78,6 +78,7 @@ test = [
     "pytest-cov>=2.0",
     "pytest-mock>=3.0",
     "pytest-xdist>=2.0",
+    "pytest-asyncio>=0.21.0",
 ]
 
 # All optional features
