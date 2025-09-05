@@ -1,0 +1,9 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include stablecam/py.typed
+recursive-include stablecam *.py
+recursive-include tests *.py
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .DS_Store

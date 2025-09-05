@@ -1,0 +1,207 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stablecam"
+version = "0.1.0"
+description = "Cross-platform USB camera monitoring with persistent anchoring"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "StableCam Development Team"},
+]
+keywords = ["camera", "usb", "video", "capture", "monitoring", "cross-platform"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video :: Capture",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "click>=8.0.0",
+    # Platform-specific core dependencies
+    "pyudev>=0.21.0; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+# Terminal UI support
+tui = [
+    "textual>=0.41.0",
+]
+
+# Linux-specific enhanced support (v4l2 requires system libraries)
+linux-enhanced = [
+    "v4l2-python>=0.2.0; sys_platform == 'linux'",
+]
+
+# Windows-specific enhanced support (optional WMI access)
+windows-enhanced = [
+    "wmi>=1.5.1; sys_platform == 'win32'",
+    "pywin32>=227; sys_platform == 'win32'",
+]
+
+# macOS-specific enhanced support (optional system access)
+macos-enhanced = [
+    "pyobjc-framework-AVFoundation>=8.0; sys_platform == 'darwin'",
+    "pyobjc-framework-IOKit>=8.0; sys_platform == 'darwin'",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "pytest-mock>=3.0",
+    "black>=22.0",
+    "flake8>=4.0",
+    "mypy>=0.900",
+    "types-click>=7.0",
+    "ruff>=0.1.0",
+]
+
+# Testing dependencies
+test = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "pytest-mock>=3.0",
+    "pytest-xdist>=2.0",
+]
+
+# All optional features
+all = [
+    "textual>=0.41.0",
+    "v4l2-python>=0.2.0; sys_platform == 'linux'",
+    "wmi>=1.5.1; sys_platform == 'win32'",
+    "pywin32>=227; sys_platform == 'win32'",
+    "pyobjc-framework-AVFoundation>=8.0; sys_platform == 'darwin'",
+    "pyobjc-framework-IOKit>=8.0; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+stablecam = "stablecam.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/stablecam/stablecam"
+Repository = "https://github.com/stablecam/stablecam"
+Documentation = "https://github.com/stablecam/stablecam#readme"
+"Bug Reports" = "https://github.com/stablecam/stablecam/issues"
+
+[tool.setuptools]
+packages = ["stablecam"]
+
+[tool.setuptools.package-data]
+stablecam = ["py.typed"]
+
+# Black code formatting
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+# MyPy type checking
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "linux: marks tests that require Linux platform",
+    "windows: marks tests that require Windows platform", 
+    "macos: marks tests that require macOS platform",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["stablecam"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+# Ruff linting (alternative to flake8)
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["B011"]
+
+[tool.ruff.isort]
+known-first-party = ["stablecam"]

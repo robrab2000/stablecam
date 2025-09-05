@@ -182,9 +182,9 @@ def list(registry_path: Optional[str], output_format: str):
         sys.exit(1)
 
 
-def main():
+def main(args=None):
     """Main entry point for the CLI."""
-    cli()
+    cli(args)
 
 
 if __name__ == '__main__':
